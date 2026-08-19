@@ -54,6 +54,8 @@ To have macVNC start automatically whenever you log in, run it once with the `-i
 
 This writes a [launchd](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) LaunchAgent to `~/Library/LaunchAgents/com.github.libvnc.macVNC.plist` and loads it immediately so the server starts right away without requiring a logout.
 
+> **Note:** If you pass `-passwd` here, the password will be stored in plaintext inside the plist file, which is readable by any process running as the same user. Consider whether that is acceptable in your environment.
+
 To stop the server from starting at login:
 
     ./macVNC.app/Contents/MacOS/macVNC -uninstall

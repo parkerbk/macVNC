@@ -718,6 +718,17 @@ static NSString *launchAgentPlistPath(void)
     return [home stringByAppendingPathComponent:@"Library/LaunchAgents/com.github.libvnc.macVNC.plist"];
 }
 
+/* Run launchctl with the given arguments using NSTask to avoid shell injection. */
+static int runLaunchctl(NSArray<NSString *> *arguments)
+{
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/launchctl";
+    task.arguments = arguments;
+    [task launch];
+    [task waitUntilExit];
+    return task.terminationStatus;
+}
+
 /*
  * Install a LaunchAgent that re-launches macVNC at login with the same
  * arguments that were passed on the current invocation (minus -install).
@@ -749,10 +760,15 @@ static void installAutostart(int argc, char *argv[])
     NSString *dir = [plistPath stringByDeletingLastPathComponent];
     NSError *err = nil;
 
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
                               withIntermediateDirectories:YES
                                                attributes:nil
-                                                    error:&err];
+                                                    error:&err]) {
+        fprintf(stderr, "autostart install: failed to create directory %s: %s\n",
+                dir.UTF8String,
+                err.localizedDescription.UTF8String);
+        exit(1);
+    }
 
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:plist
                                                               format:NSPropertyListXMLFormat_v1_0
@@ -772,8 +788,7 @@ static void installAutostart(int argc, char *argv[])
     }
 
     /* Load the agent so it starts immediately without requiring a logout */
-    NSString *cmd = [NSString stringWithFormat:@"launchctl load '%@'", plistPath];
-    int rc = system(cmd.UTF8String);
+    int rc = runLaunchctl(@[@"load", plistPath]);
     if (rc != 0)
         fprintf(stderr, "autostart install: launchctl load returned %d\n", rc);
 
@@ -786,8 +801,7 @@ static void uninstallAutostart(void)
 {
     NSString *plistPath = launchAgentPlistPath();
 
-    NSString *cmd = [NSString stringWithFormat:@"launchctl unload '%@'", plistPath];
-    int rc = system(cmd.UTF8String);
+    int rc = runLaunchctl(@[@"unload", plistPath]);
     if (rc != 0)
         fprintf(stderr, "autostart uninstall: launchctl unload returned %d\n", rc);
 
