@@ -14,6 +14,7 @@ GPL dump by AT&T Cambridge.
 * Double-buffering for framebuffer updates.
 * Mouse and keyboard input.
 * Multi-monitor support.
+* Bonjour discovery via `_rfb._tcp`.
 
 # Building
 
@@ -43,10 +44,11 @@ Note that if launched from Terminal, the entry shown will be 'Terminal', not 'ma
 Note that setting a password is mandatory in case you want to access the server using MacOS's built-in Screen Sharing app.
 You can do so via the `-passwd` commandline argument.
 
+macVNC also advertises itself over Bonjour, so compatible clients can discover it automatically on the local network.
+
 # License
 
 As its predecessors, macVNC is licensed under the GPL version 2. See [COPYING](COPYING) for more information.
-
 
 
 

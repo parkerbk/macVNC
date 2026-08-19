@@ -28,6 +28,7 @@
  */
 
 #include <Carbon/Carbon.h>
+#import <Foundation/Foundation.h>
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
 #include <rfb/rfb.h>
 #include <rfb/keysym.h>
@@ -41,6 +42,27 @@
 
 /* The main LibVNCServer screen object */
 rfbScreenInfoPtr rfbScreen;
+
+@interface BonjourPublisher : NSObject <NSNetServiceDelegate>
+@end
+
+@implementation BonjourPublisher
+
+- (void)netServiceDidPublish:(NSNetService *)sender
+{
+    fprintf(stderr, "Published Bonjour service '%s' on port %ld\n", sender.name.UTF8String, (long)sender.port);
+}
+
+- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary<NSString *, NSNumber *> *)errorDict
+{
+    NSNumber *errorCode = errorDict[NSNetServicesErrorCode];
+    fprintf(stderr, "Warning: could not publish Bonjour service '%s' (error %ld)\n",
+            sender.name.UTF8String,
+            (long)(errorCode != nil ? errorCode.integerValue : 0));
+}
+
+@end
+
 /* Operation modes set by CLI options */
 rfbBool viewOnly = FALSE;
 
@@ -82,6 +104,9 @@ CFMutableDictionaryRef charAltGrKeyMap;
 
 /* a dictionary mapping characters obtained by Shift+Alt-Gr to keycodes */
 CFMutableDictionaryRef charShiftAltGrKeyMap;
+
+static NSNetService *bonjourService;
+static BonjourPublisher *bonjourPublisher;
 
 /* a table mapping special keys to keycodes. static as these are layout-independent */
 static int specialKeyMap[] = {
@@ -255,6 +280,50 @@ dimmingInit(void)
 
     initialized = TRUE;
     return 0;
+}
+
+static void
+publishBonjourService(void)
+{
+    NSString *serviceName;
+    const char *hostName;
+
+    if (bonjourService != nil || rfbScreen == NULL)
+        return;
+
+    if (rfbScreen->port <= 0) {
+        fprintf(stderr, "Warning: could not determine a VNC port for Bonjour discovery\n");
+        return;
+    }
+
+    hostName = rfbScreen->thisHost[0] != '\0' ? rfbScreen->thisHost : "macVNC";
+    if (rfbScreen->port == 5900) {
+        serviceName = [NSString stringWithFormat:@"macVNC on %s", hostName];
+    } else {
+        serviceName = [NSString stringWithFormat:@"macVNC on %s (%d)", hostName, rfbScreen->port];
+    }
+
+    bonjourPublisher = [BonjourPublisher new];
+    bonjourService = [[NSNetService alloc] initWithDomain:@"local."
+                                                     type:@"_rfb._tcp."
+                                                     name:serviceName
+                                                     port:(int)rfbScreen->port];
+    bonjourService.delegate = bonjourPublisher;
+    [bonjourService scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    [bonjourService publish];
+}
+
+static void
+stopBonjourService(void)
+{
+    if (bonjourService == nil)
+        return;
+
+    [bonjourService stop];
+    [bonjourService removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    bonjourService.delegate = nil;
+    bonjourService = nil;
+    bonjourPublisher = nil;
 }
 
 
@@ -623,6 +692,7 @@ ScreenInit(int argc, char**argv)
   [capturer startCapture];
 
   rfbInitServer(rfbScreen);
+  publishBonjourService();
 
   return TRUE;
 }
@@ -675,6 +745,7 @@ int main(int argc,char *argv[])
   if(!ScreenInit(argc,argv))
       exit(1);
   rfbScreen->newClientHook = newClient;
+  atexit(stopBonjourService);
 
   rfbRunEventLoop(rfbScreen,-1,TRUE);
 
@@ -682,8 +753,10 @@ int main(int argc,char *argv[])
      The VNC machinery is in the background now and framebuffer updating happens on another thread as well.
   */
   while(1) {
-      /* Nothing left to do on the main thread. */
-      sleep(1);
+      /* Nothing left to do on the main thread besides servicing Bonjour. */
+      @autoreleasepool {
+          [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:1.0]];
+      }
   }
 
   dimmingShutdown();
@@ -693,6 +766,7 @@ int main(int argc,char *argv[])
 
 void serverShutdown(rfbClientPtr cl)
 {
+  stopBonjourService();
   rfbScreenCleanup(rfbScreen);
   dimmingShutdown();
   exit(0);
