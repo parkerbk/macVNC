@@ -40,9 +40,12 @@ set(SOURCE_FILES
 set(MACOSX_BUNDLE_COPYRIGHT "© 2024 Christian Beier (macvnc@christianbeier.net)")
 set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
 set(MACOSX_BUNDLE_ICON_FILE icon.icns)
+set(MACVNC_BUNDLE_IDENTIFIER "com.github.libvnc.macVNC")
+configure_file(src/Info.plist.in ${CMAKE_CURRENT_BINARY_DIR}/Info.plist @ONLY)
 set_source_files_properties(src/icon.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
 add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${SOURCE_FILES})
+set_target_properties(${PROJECT_NAME} PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/Info.plist)
 
 target_link_libraries(${PROJECT_NAME} LibVNCServer::vncserver ${CMAKE_THREAD_LIBS_INIT} ${CARBON_LIBRARY} ${IOKIT_LIBRARY}
   ${SCREEN_CAPTURE_KIT}
