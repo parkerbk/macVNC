@@ -10,6 +10,8 @@ It is [based on the macOS server example from LibVNCServer](https://github.com/L
 which in turn is based on OSXvnc by Dan McGuirk which again is based on the original VNC
 GPL dump by AT&T Cambridge.
 
+Used Copilot to add autostart, GUI and bonjour discovery. 
+
 ## Features
 
 * Fully multi-threaded.
