@@ -711,6 +711,114 @@ enum rfbNewClientAction newClient(rfbClientPtr cl)
   return(RFB_CLIENT_ACCEPT);
 }
 
+/* Returns the path to the LaunchAgent plist file. Caller must release. */
+static NSString *launchAgentPlistPath(void)
+{
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:@"Library/LaunchAgents/com.github.libvnc.macVNC.plist"];
+}
+
+/* Run launchctl with the given arguments using NSTask to avoid shell injection. */
+static int runLaunchctl(NSArray<NSString *> *arguments)
+{
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/launchctl";
+    task.arguments = arguments;
+    [task launch];
+    [task waitUntilExit];
+    return task.terminationStatus;
+}
+
+/*
+ * Install a LaunchAgent that re-launches macVNC at login with the same
+ * arguments that were passed on the current invocation (minus -install).
+ */
+static void installAutostart(int argc, char *argv[])
+{
+    NSString *execPath = [[NSBundle mainBundle] executablePath];
+    if (!execPath) {
+        /* Fall back to argv[0] when not running inside a bundle */
+        execPath = [NSString stringWithUTF8String:argv[0]];
+    }
+
+    NSMutableArray<NSString *> *programArgs = [NSMutableArray array];
+    [programArgs addObject:execPath];
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-install") == 0)
+            continue;
+        [programArgs addObject:[NSString stringWithUTF8String:argv[i]]];
+    }
+
+    NSDictionary *plist = @{
+        @"Label":            @"com.github.libvnc.macVNC",
+        @"ProgramArguments": programArgs,
+        @"RunAtLoad":        @YES,
+        @"KeepAlive":        @YES,
+    };
+
+    NSString *plistPath = launchAgentPlistPath();
+    NSString *dir = [plistPath stringByDeletingLastPathComponent];
+    NSError *err = nil;
+
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:&err]) {
+        fprintf(stderr, "autostart install: failed to create directory %s: %s\n",
+                dir.UTF8String,
+                err.localizedDescription.UTF8String);
+        exit(1);
+    }
+
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:plist
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:&err];
+    if (!data) {
+        fprintf(stderr, "autostart install: failed to serialise plist: %s\n",
+                err.localizedDescription.UTF8String);
+        exit(1);
+    }
+
+    if (![data writeToFile:plistPath options:NSDataWritingAtomic error:&err]) {
+        fprintf(stderr, "autostart install: failed to write plist to %s: %s\n",
+                plistPath.UTF8String,
+                err.localizedDescription.UTF8String);
+        exit(1);
+    }
+
+    /* Load the agent so it starts immediately without requiring a logout */
+    int rc = runLaunchctl(@[@"load", plistPath]);
+    if (rc != 0)
+        fprintf(stderr, "autostart install: launchctl load returned %d\n", rc);
+
+    fprintf(stderr, "autostart install: LaunchAgent installed at %s\n", plistPath.UTF8String);
+    exit(EXIT_SUCCESS);
+}
+
+/* Uninstall the LaunchAgent installed by -install. */
+static void uninstallAutostart(void)
+{
+    NSString *plistPath = launchAgentPlistPath();
+
+    int rc = runLaunchctl(@[@"unload", plistPath]);
+    if (rc != 0)
+        fprintf(stderr, "autostart uninstall: launchctl unload returned %d\n", rc);
+
+    NSError *err = nil;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+        if (![[NSFileManager defaultManager] removeItemAtPath:plistPath error:&err]) {
+            fprintf(stderr, "autostart uninstall: failed to remove %s: %s\n",
+                    plistPath.UTF8String,
+                    err.localizedDescription.UTF8String);
+            exit(1);
+        }
+    }
+
+    fprintf(stderr, "autostart uninstall: LaunchAgent removed\n");
+    exit(EXIT_SUCCESS);
+}
+
 int main(int argc,char *argv[])
 {
   int i;
@@ -720,9 +828,17 @@ int main(int argc,char *argv[])
       viewOnly=TRUE;
     } else if(strcmp(argv[i],"-display")==0) {
 	displayNumber = atoi(argv[i+1]);
+    } else if(strcmp(argv[i],"-install")==0) {
+        installAutostart(argc, argv);
+        /* installAutostart() calls exit(), never returns */
+    } else if(strcmp(argv[i],"-uninstall")==0) {
+        uninstallAutostart();
+        /* uninstallAutostart() calls exit(), never returns */
     } else if(strcmp(argv[i],"-h") == 0 || strcmp(argv[i],"--help") == 0)  {
         fprintf(stderr, "-viewonly              Do not allow any input\n");
         fprintf(stderr, "-display <index>       Only export specified display\n");
+        fprintf(stderr, "-install               Install a login-item LaunchAgent and start immediately\n");
+        fprintf(stderr, "-uninstall             Remove the login-item LaunchAgent\n");
         rfbUsage();
         exit(EXIT_SUCCESS);
     }

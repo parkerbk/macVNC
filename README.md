@@ -46,6 +46,20 @@ You can do so via the `-passwd` commandline argument.
 
 macVNC also advertises itself over Bonjour, so compatible clients can discover it automatically on the local network.
 
+## Autostart on Login
+
+To have macVNC start automatically whenever you log in, run it once with the `-install` flag together with any options you want it to use on every start:
+
+    ./macVNC.app/Contents/MacOS/macVNC -install -rfbport 5901 -passwd secret
+
+This writes a [launchd](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) LaunchAgent to `~/Library/LaunchAgents/com.github.libvnc.macVNC.plist` and loads it immediately so the server starts right away without requiring a logout.
+
+> **Note:** If you pass `-passwd` here, the password will be stored in plaintext inside the plist file, which is readable by any process running as the same user. Consider whether that is acceptable in your environment.
+
+To stop the server from starting at login:
+
+    ./macVNC.app/Contents/MacOS/macVNC -uninstall
+
 # License
 
 As its predecessors, macVNC is licensed under the GPL version 2. See [COPYING](COPYING) for more information.
