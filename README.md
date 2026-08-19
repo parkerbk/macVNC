@@ -2,7 +2,9 @@
 
 # About
 
-macVNC is a simple command-line VNC server for macOS.
+macVNC is a simple command-line VNC server for macOS.  It also ships with
+**macVNCUI**, a menu bar application that wraps the command-line server and
+exposes all its options through a point-and-click interface.
 
 It is [based on the macOS server example from LibVNCServer](https://github.com/LibVNC/libvncserver/commits/6e5f96e3ea53bf85cec7d985b120daf1c91ce0d9/examples/mac.c?browsing_rename_history=true&new_path=examples/server/mac.c&original_branch=master)
 which in turn is based on OSXvnc by Dan McGuirk which again is based on the original VNC
@@ -15,6 +17,8 @@ GPL dump by AT&T Cambridge.
 * Mouse and keyboard input.
 * Multi-monitor support.
 * Bonjour discovery via `_rfb._tcp`.
+* **Menu bar UI** (`macVNCUI.app`) for one-click start/stop, port, password,
+  view-only mode, display selection, autostart, and live log viewer.
 
 # Building
 
@@ -31,6 +35,29 @@ macVNC uses CMake, thus after installing build dependencies it's:
     cmake --install .
 
 # Running
+
+## Menu Bar Application (macVNCUI)
+
+Open `macVNCUI.app` from your build directory (or copy it to `/Applications`).
+A VNC icon appears in the menu bar.  Click it to:
+
+* **Start / Stop VNC Server** – launch or terminate the VNC server subprocess.
+* **Port** – choose the TCP port (default 5900).
+* **Set Password…** – optionally require a password for incoming connections.
+* **View Only** – toggle read-only mode (no keyboard/mouse input forwarded).
+* **Display** – select which screen to share (primary or any connected display).
+* **Start at Login** – install/remove the launchd LaunchAgent so the server
+  starts automatically when you log in.
+* **View Log…** – open a live terminal-style window showing server output.
+* **Quit macVNC** – stop the server and exit the menu bar app.
+
+Settings are saved in `NSUserDefaults` and restored on the next launch.
+
+> **Note:** macVNCUI embeds the `macVNC` binary inside its own `.app` bundle
+> (`Contents/MacOS/macVNC`).  If you move or rename the bundle you may need to
+> rebuild so the embedded copy is up to date.
+
+## Command-Line (macVNC)
 
 As you might have Apple's Remote Desktop Server already running (which occupies port 5900),
 you can run macVNC via
