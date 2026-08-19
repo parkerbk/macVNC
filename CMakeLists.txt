@@ -25,6 +25,7 @@ find_library(CORE_VIDEO CoreVideo)
 find_library(FOUNDATION Foundation)
 find_library(APPKIT_LIBRARY AppKit REQUIRED)
 find_library(CORE_GRAPHICS CoreGraphics REQUIRED)
+find_library(SECURITY_LIBRARY Security REQUIRED)
 
 #
 # Sources
@@ -84,15 +85,14 @@ configure_file(src/MenuBarInfo.plist.in ${CMAKE_CURRENT_BINARY_DIR}/MenuBarInfo.
 add_executable(${MACVNCUI_TARGET} MACOSX_BUNDLE ${MACVNCUI_SOURCE_FILES})
 set_target_properties(${MACVNCUI_TARGET} PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/MenuBarInfo.plist
-    # Objective-C is needed for AppKit
-    XCODE_ATTRIBUTE_ENABLE_OBJC_ARC NO
 )
 target_compile_options(${MACVNCUI_TARGET} PRIVATE -fobjc-arc)
 
 target_link_libraries(${MACVNCUI_TARGET}
     ${APPKIT_LIBRARY}
     ${FOUNDATION}
-    ${CORE_GRAPHICS})
+    ${CORE_GRAPHICS}
+    ${SECURITY_LIBRARY})
 
 # Embed the macVNC CLI binary inside macVNCUI.app/Contents/MacOS/ so the UI
 # can locate and launch it as a subprocess at runtime.

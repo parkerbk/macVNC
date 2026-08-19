@@ -5,7 +5,8 @@
  *
  * This application locates the bundled macVNC CLI binary, manages it as an
  * NSTask subprocess, and exposes its configuration through an NSStatusItem
- * menu.  All settings are persisted in NSUserDefaults.
+ * menu.  Settings are persisted in NSUserDefaults; the VNC password is stored
+ * in the macOS Keychain.
  *
  * Copyright © 2024 The macVNC Contributors.
  * Licensed under the GNU GPL version 2.  See COPYING for details.
@@ -14,16 +15,62 @@
 #import "MenuBarApp.h"
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <Security/Security.h>
 
 /* ── NSUserDefaults keys ─────────────────────────────────────────────────── */
 static NSString * const kPrefPort        = @"port";
-static NSString * const kPrefPassword    = @"password";
 static NSString * const kPrefViewOnly    = @"viewOnly";
 static NSString * const kPrefDisplayIdx  = @"displayIndex";
+
+/* ── Keychain service label ──────────────────────────────────────────────── */
+static NSString * const kKeychainService = @"com.github.libvnc.macVNC";
+static NSString * const kKeychainAccount = @"vncPassword";
 
 /* ── Default values ──────────────────────────────────────────────────────── */
 static const NSInteger kDefaultPort        = 5900;
 static const NSInteger kDefaultDisplayIdx  = -1;   /* -1 = primary */
+
+/* ── Keychain helpers ────────────────────────────────────────────────────── */
+
+static NSString *keychainLoadPassword(void)
+{
+    NSDictionary *query = @{
+        (__bridge id)kSecClass:            (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService:      kKeychainService,
+        (__bridge id)kSecAttrAccount:      kKeychainAccount,
+        (__bridge id)kSecReturnData:       @YES,
+        (__bridge id)kSecMatchLimit:       (__bridge id)kSecMatchLimitOne,
+    };
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    if (status == errSecSuccess && result) {
+        NSData *data = (__bridge_transfer NSData *)result;
+        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+    }
+    return @"";
+}
+
+static void keychainSavePassword(NSString *password)
+{
+    NSData *data = [password dataUsingEncoding:NSUTF8StringEncoding];
+
+    /* Try updating an existing item first. */
+    NSDictionary *query = @{
+        (__bridge id)kSecClass:       (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kKeychainService,
+        (__bridge id)kSecAttrAccount: kKeychainAccount,
+    };
+    NSDictionary *attrs = @{
+        (__bridge id)kSecValueData: data,
+    };
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query,
+                                    (__bridge CFDictionaryRef)attrs);
+    if (status == errSecItemNotFound) {
+        NSMutableDictionary *newItem = [query mutableCopy];
+        newItem[(__bridge id)kSecValueData] = data;
+        SecItemAdd((__bridge CFDictionaryRef)newItem, NULL);
+    }
+}
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -115,7 +162,6 @@ static int runLaunchctl(NSArray<NSString *> *args)
         kPrefPort:       @(kDefaultPort),
         kPrefViewOnly:   @NO,
         kPrefDisplayIdx: @(kDefaultDisplayIdx),
-        kPrefPassword:   @"",
     }];
 }
 
@@ -132,7 +178,7 @@ static int runLaunchctl(NSArray<NSString *> *args)
 - (void)refreshStatusIcon:(BOOL)running
 {
     NSString *name = running ? @"dot.radiowaves.left.and.right"
-                              : @"dot.radiowaves.left.and.right";
+                              : @"antenna.radiowaves.left.and.right";
     NSImage *img = [NSImage imageWithSystemSymbolName:name
                              accessibilityDescription:running ? @"VNC running"
                                                                : @"VNC stopped"];
@@ -317,6 +363,68 @@ static int runLaunchctl(NSArray<NSString *> *args)
     return _serverTask != nil && _serverTask.isRunning;
 }
 
+/*
+ * Build the argument list for the macVNC CLI binary from the current
+ * NSUserDefaults settings.  When withInstallFlag is YES, "-install" is
+ * prepended so the same helper can be used for autostart registration.
+ *
+ * Password handling: to avoid exposing the password in the process table
+ * (visible via `ps aux`), we write it to a mode-0600 temporary file and pass
+ * "-passwdfile <path>" instead of "-passwd <secret>".  The file is deleted
+ * after the task exits (caller's responsibility) – callers receive the temp
+ * file path via outPasswordFile (may be nil if no password is set).
+ */
+- (NSMutableArray<NSString *> *)buildServerArguments:(BOOL)withInstallFlag
+                                    passwordTempFile:(NSString *__autoreleasing *)outPasswordFile
+{
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSMutableArray<NSString *> *args = [NSMutableArray array];
+
+    if (withInstallFlag)
+        [args addObject:@"-install"];
+
+    NSInteger port = [ud integerForKey:kPrefPort];
+    [args addObjectsFromArray:@[@"-rfbport", [NSString stringWithFormat:@"%ld", (long)port]]];
+
+    NSString *password = keychainLoadPassword();
+    if (password.length > 0) {
+        /* Write to a restricted temp file so the secret stays off the process table. */
+        NSString *tmpPath = [NSTemporaryDirectory()
+                             stringByAppendingPathComponent:
+                             [NSString stringWithFormat:@"macvnc_passwd_%d", (int)getpid()]];
+        NSError *err = nil;
+        if ([password writeToFile:tmpPath
+                       atomically:YES
+                         encoding:NSUTF8StringEncoding
+                            error:&err]) {
+            /* chmod 600 so only the current user can read it */
+            [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @(0600)}
+                                             ofItemAtPath:tmpPath
+                                                    error:nil];
+            [args addObjectsFromArray:@[@"-passwdfile", tmpPath]];
+            if (outPasswordFile)
+                *outPasswordFile = tmpPath;
+        } else {
+            /* Fall back to the direct argument if the temp file fails */
+            [args addObjectsFromArray:@[@"-passwd", password]];
+            if (outPasswordFile)
+                *outPasswordFile = nil;
+        }
+    } else {
+        if (outPasswordFile)
+            *outPasswordFile = nil;
+    }
+
+    if ([ud boolForKey:kPrefViewOnly])
+        [args addObject:@"-viewonly"];
+
+    NSInteger displayIdx = [ud integerForKey:kPrefDisplayIdx];
+    if (displayIdx >= 0)
+        [args addObjectsFromArray:@[@"-display", [NSString stringWithFormat:@"%ld", (long)displayIdx]]];
+
+    return args;
+}
+
 - (void)startServer
 {
     if ([self isServerRunning])
@@ -330,22 +438,9 @@ static int runLaunchctl(NSArray<NSString *> *args)
         return;
     }
 
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSMutableArray<NSString *> *args = [NSMutableArray array];
-
-    NSInteger port = [ud integerForKey:kPrefPort];
-    [args addObjectsFromArray:@[@"-rfbport", [NSString stringWithFormat:@"%ld", (long)port]]];
-
-    NSString *password = [ud stringForKey:kPrefPassword];
-    if (password.length > 0)
-        [args addObjectsFromArray:@[@"-passwd", password]];
-
-    if ([ud boolForKey:kPrefViewOnly])
-        [args addObject:@"-viewonly"];
-
-    NSInteger displayIdx = [ud integerForKey:kPrefDisplayIdx];
-    if (displayIdx >= 0)
-        [args addObjectsFromArray:@[@"-display", [NSString stringWithFormat:@"%ld", (long)displayIdx]]];
+    NSString *passwordTmpFile = nil;
+    NSMutableArray<NSString *> *args = [self buildServerArguments:NO
+                                                 passwordTempFile:&passwordTmpFile];
 
     _logBuffer = [NSMutableString string];
     _logPipe   = [NSPipe pipe];
@@ -355,6 +450,13 @@ static int runLaunchctl(NSArray<NSString *> *args)
     _serverTask.arguments       = args;
     _serverTask.standardOutput  = _logPipe;
     _serverTask.standardError   = _logPipe;
+
+    /* Clean up the password temp file once the task exits. */
+    NSString *tmpFileToDelete = [passwordTmpFile copy];
+    _serverTask.terminationHandler = ^(NSTask *task) {
+        if (tmpFileToDelete)
+            [[NSFileManager defaultManager] removeItemAtPath:tmpFileToDelete error:nil];
+    };
 
     /* Observe task termination so we can update the menu. */
     [[NSNotificationCenter defaultCenter]
@@ -409,8 +511,10 @@ static int runLaunchctl(NSArray<NSString *> *args)
         NSString *s = [[NSString alloc] initWithData:data
                                             encoding:NSUTF8StringEncoding];
         if (s) {
-            [_logBuffer appendString:s];
+            /* Dispatch both the buffer append and the view update to the main
+               queue so _logBuffer is only ever accessed on one thread. */
             dispatch_async(dispatch_get_main_queue(), ^{
+                [_logBuffer appendString:s];
                 [self appendToLogView:s];
             });
         }
@@ -481,13 +585,12 @@ static int runLaunchctl(NSArray<NSString *> *args)
     [alert addButtonWithTitle:@"Cancel"];
 
     NSSecureTextField *field = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
-    field.stringValue = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefPassword] ?: @"";
+    field.stringValue = keychainLoadPassword();
     alert.accessoryView = field;
     [field selectText:nil];
 
     if ([alert runModal] == NSAlertFirstButtonReturn) {
-        [[NSUserDefaults standardUserDefaults] setObject:field.stringValue
-                                                  forKey:kPrefPassword];
+        keychainSavePassword(field.stringValue);
         if ([self isServerRunning]) {
             [self stopServer];
             [self startServer];
@@ -539,28 +642,18 @@ static int runLaunchctl(NSArray<NSString *> *args)
         [t waitUntilExit];
     } else {
         /* Install: build the same args the server would use and call -install */
-        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-        NSMutableArray<NSString *> *args = [NSMutableArray arrayWithObject:@"-install"];
-
-        NSInteger port = [ud integerForKey:kPrefPort];
-        [args addObjectsFromArray:@[@"-rfbport", [NSString stringWithFormat:@"%ld", (long)port]]];
-
-        NSString *password = [ud stringForKey:kPrefPassword];
-        if (password.length > 0)
-            [args addObjectsFromArray:@[@"-passwd", password]];
-
-        if ([ud boolForKey:kPrefViewOnly])
-            [args addObject:@"-viewonly"];
-
-        NSInteger displayIdx = [ud integerForKey:kPrefDisplayIdx];
-        if (displayIdx >= 0)
-            [args addObjectsFromArray:@[@"-display", [NSString stringWithFormat:@"%ld", (long)displayIdx]]];
+        NSString *passwordTmpFile = nil;
+        NSMutableArray<NSString *> *args = [self buildServerArguments:YES
+                                                     passwordTempFile:&passwordTmpFile];
 
         NSTask *t = [[NSTask alloc] init];
         t.launchPath = binary;
         t.arguments  = args;
         [t launch];
         [t waitUntilExit];
+
+        if (passwordTmpFile)
+            [[NSFileManager defaultManager] removeItemAtPath:passwordTmpFile error:nil];
     }
 
     [self updateMenuState];
